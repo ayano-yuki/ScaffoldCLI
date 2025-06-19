@@ -1,71 +1,61 @@
 package usecase
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
-
-	"scaffold/domain/model"
-	"scaffold/domain/service"
-	infra "scaffold/infrastructure/service"
+	"strings"
+	"text/template"
 )
 
-type InitProjectUsecase struct {
-	templateService service.TemplateService
-	fileWriter      infra.FileWriter
-}
+// InitProject は、テンプレートディレクトリ配下のファイル・ディレクトリ構造を
+// そのままコピーしつつ、Goのテンプレートとして展開してプロジェクトを初期化します。
+func InitProject(projectName, templateName string) error {
+	templateDir := filepath.Join("templates", templateName)
+	destDir := filepath.Join(".", projectName)
 
-func NewInitProjectUsecase(
-	templateService service.TemplateService,
-	fileWriter infra.FileWriter,
-) *InitProjectUsecase {
-	return &InitProjectUsecase{
-		templateService: templateService,
-		fileWriter:      fileWriter,
+	data := map[string]interface{}{
+		"Name": projectName,
 	}
+
+	return copyTemplateDir(templateDir, destDir, data)
 }
 
-// Execute プロジェクト初期化処理
-func (u *InitProjectUsecase) Execute(project model.Project) error {
-	// ① テンプレートディレクトリの特定
-	templateRoot := filepath.Join("templates", project.TemplateType)
-
-	// ② テンプレート内のファイルを再帰的に走査
-	err := filepath.Walk(templateRoot, func(path string, info os.FileInfo, err error) error {
+// copyTemplateDir は templateDir 配下のすべてのファイル・フォルダを再帰的に走査し、
+// destDir に同じ構造でテンプレート展開しながら生成します。
+func copyTemplateDir(templateDir, destDir string, data map[string]interface{}) error {
+	return filepath.Walk(templateDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		// ディレクトリはスキップ
+
+		relPath, err := filepath.Rel(templateDir, path)
+		if err != nil {
+			return err
+		}
+
+		targetPath := filepath.Join(destDir, relPath)
+
 		if info.IsDir() {
-			return nil
+			// ディレクトリを作成
+			return os.MkdirAll(targetPath, os.ModePerm)
 		}
 
-		// ③ ファイル読み込み
-		contentBytes, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("failed to read template file: %w", err)
+		// ファイルの拡張子が .tmpl なら除去する
+		if strings.HasSuffix(targetPath, ".tmpl") {
+			targetPath = strings.TrimSuffix(targetPath, ".tmpl")
 		}
 
-		// ④ テンプレートレンダリング
-		rendered, err := u.templateService.Render(string(contentBytes), project)
-		if err != nil {
-			return fmt.Errorf("failed to render template: %w", err)
-		}
-
-		// ⑤ 出力先パス計算（テンプレートルートをベースに相対パス化）
-		relPath, err := filepath.Rel(templateRoot, path)
+		tmpl, err := template.ParseFiles(path)
 		if err != nil {
 			return err
 		}
-		outputPath := filepath.Join(project.OutputDir, relPath)
 
-		// ⑥ ファイル書き出し
-		if err := u.fileWriter.WriteFile(outputPath, rendered); err != nil {
-			return fmt.Errorf("failed to write file: %w", err)
+		f, err := os.Create(targetPath)
+		if err != nil {
+			return err
 		}
+		defer f.Close()
 
-		return nil
+		return tmpl.Execute(f, data)
 	})
-
-	return err
 }
